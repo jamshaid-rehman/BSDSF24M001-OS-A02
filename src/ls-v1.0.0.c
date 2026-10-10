@@ -1,11 +1,13 @@
 /*
-* Programming Assignment 02: lsv1.2.0
+* Programming Assignment 02: lsv1.3.0
 * v1.1.0 added -l (long listing)
-* v1.2.0 adds column display (down then across) for the default output
+* v1.2.0 added column display (down then across) as the default
+* v1.3.0 adds -x (horizontal, row-major column display)
 * Usage:
-*       $ lsv1.2.0
-*       $ lsv1.2.0 -l
-*       $ lsv1.2.0 /home /etc/
+*       $ lsv1.3.0
+*       $ lsv1.3.0 -l
+*       $ lsv1.3.0 -x
+*       $ lsv1.3.0 -x /home /etc/
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,80 +25,78 @@
 
 extern int errno;
 
-void do_ls(const char *dir);
-void do_ls_columns(const char *dir);
+/* Task 2: display mode flag */
+enum display_mode
+{
+    MODE_DEFAULT,      /* down then across */
+    MODE_LONG,         /* -l */
+    MODE_HORIZONTAL    /* -x */
+};
+
+void do_ls(const char *dir, enum display_mode mode);
 void do_ls_long(const char *dir);
+void print_vertical(char **names, size_t count, size_t max_len);
+void print_horizontal(char **names, size_t count, size_t max_len);
+int  get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
 
 int main(int argc, char *argv[])
 {
     int opt;
-    int long_flag = 0;
+    enum display_mode mode = MODE_DEFAULT;
 
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    /* Task 2: recognise -l and -x (the last one given wins) */
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         switch (opt)
         {
         case 'l':
-            long_flag = 1;
+            mode = MODE_LONG;
+            break;
+        case 'x':
+            mode = MODE_HORIZONTAL;
             break;
         default:
-            fprintf(stderr, "Usage: %s [-l] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [directory...]\n", argv[0]);
             exit(EXIT_FAILURE);
         }
     }
 
     if (optind == argc)
     {
-        if (long_flag)
-            do_ls_long(".");
-        else
-            do_ls_columns(".");
+        do_ls(".", mode);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s : \n", argv[i]);
-            if (long_flag)
-                do_ls_long(argv[i]);
-            else
-                do_ls_columns(argv[i]);
+            do_ls(argv[i], mode);
             puts("");
         }
     }
     return 0;
 }
 
-/* Original simple listing (one name per line), kept for reference */
-void do_ls(const char *dir)
+/* Terminal width via ioctl, fallback to 80 */
+int get_terminal_width(void)
 {
-    struct dirent *entry;
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-    errno = 0;
-    while ((entry = readdir(dp)) != NULL)
-    {
-        if (entry->d_name[0] == '.')
-            continue;
-        printf("%s\n", entry->d_name);
-    }
-
-    if (errno != 0)
-    {
-        perror("readdir failed");
-    }
-
-    closedir(dp);
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+    return 80;
 }
 
-/* Feature 3: column display, "down then across" */
-void do_ls_columns(const char *dir)
+/* Task 4: read names into an array, then choose the display function */
+void do_ls(const char *dir, enum display_mode mode)
 {
+    /* Long listing reads its own metadata, so hand over directly */
+    if (mode == MODE_LONG)
+    {
+        do_ls_long(dir);
+        return;
+    }
+
     struct dirent *entry;
     DIR *dp = opendir(dir);
     if (dp == NULL)
@@ -105,7 +105,6 @@ void do_ls_columns(const char *dir)
         return;
     }
 
-    /* Task 2: read all names into a dynamic array, track longest name */
     char **names = NULL;
     size_t count = 0, capacity = 0;
     size_t max_len = 0;
@@ -148,26 +147,30 @@ void do_ls_columns(const char *dir)
         perror("readdir failed");
     closedir(dp);
 
-    if (count == 0)
+    if (count > 0)
     {
-        free(names);
-        return;
+        if (mode == MODE_HORIZONTAL)
+            print_horizontal(names, count, max_len);
+        else
+            print_vertical(names, count, max_len);
     }
 
-    /* Task 3: terminal width via ioctl, fallback to 80 */
-    int term_width = 80;
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        term_width = ws.ws_col;
+    for (size_t i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
 
+/* Default: "down then across" */
+void print_vertical(char **names, size_t count, size_t max_len)
+{
+    int term_width = get_terminal_width();
     size_t spacing = 2;
     size_t col_width = max_len + spacing;
     size_t num_cols = term_width / col_width;
     if (num_cols < 1)
         num_cols = 1;
-    size_t num_rows = (count + num_cols - 1) / num_cols;   /* ceiling */
+    size_t num_rows = (count + num_cols - 1) / num_cols;
 
-    /* Task 4: print row by row, going down each column first */
     for (size_t row = 0; row < num_rows; row++)
     {
         for (size_t col = 0; col < num_cols; col++)
@@ -176,7 +179,6 @@ void do_ls_columns(const char *dir)
             if (idx >= count)
                 break;
 
-            /* pad every item except the last one on the row */
             if (idx + num_rows < count && col < num_cols - 1)
                 printf("%-*s", (int)col_width, names[idx]);
             else
@@ -184,10 +186,28 @@ void do_ls_columns(const char *dir)
         }
         printf("\n");
     }
+}
+
+/* Task 3: -x, horizontal (row-major) display */
+void print_horizontal(char **names, size_t count, size_t max_len)
+{
+    int term_width = get_terminal_width();
+    size_t spacing = 2;
+    size_t col_width = max_len + spacing;
+    size_t pos = 0;     /* current horizontal position on the line */
 
     for (size_t i = 0; i < count; i++)
-        free(names[i]);
-    free(names);
+    {
+        /* if this entry would not fit on the line, wrap first */
+        if (pos > 0 && pos + col_width > (size_t)term_width)
+        {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", (int)col_width, names[i]);
+        pos += col_width;
+    }
+    printf("\n");
 }
 
 /* Convert st_mode into a string such as "drwxr-xr-x" */
