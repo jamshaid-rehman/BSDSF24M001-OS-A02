@@ -20,3 +20,14 @@ Feature 3, Q2. ioctl and the fixed-width fallback
 
 ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) asks the terminal driver for the current window size, so the program gets the actual number of columns (ws.ws_col) and can fit as many columns as the window allows.
 With only a fixed 80-column width, the output would not adapt. In a wider terminal, space would be wasted and the listing would be longer than needed. In a narrower terminal, lines longer than the window would wrap and break the alignment. Resizing the window would have no effect on the layout.
+Feature 4, Q1. Vertical vs horizontal complexity
+
+The “down then across” (vertical) layout is more complex. Before printing anything you must know the total number of files and the longest name. You then calculate the number of columns and the number of rows (ceil(count / cols)), and every item’s position depends on that row count, using the index row + col * num_rows. This needs a nested loop and careful handling of the last, partly filled column.
+The “across” (horizontal) layout needs very little pre-calculation. You only need the column width (longest name plus spacing) and the terminal width. The names are printed in their original order, and you keep a running position counter. When the next name would not fit on the line, you print a newline and reset the counter. No row or column counts are needed.
+So the vertical layout needs more pre-calculation, because the position of each item depends on the number of rows, which depends on everything else.
+
+Feature 4, Q2. Managing display modes
+
+I used an enum display_mode with three values: MODE_DEFAULT, MODE_LONG and MODE_HORIZONTAL. It starts as MODE_DEFAULT.
+In main, the getopt() loop sets the mode: -l sets MODE_LONG and -x sets MODE_HORIZONTAL. If both are given, the last one wins, as in the real ls.
+The mode is passed to do_ls(). If the mode is MODE_LONG, it calls do_ls_long(). Otherwise it reads all filenames into a dynamic array, then checks the mode: MODE_HORIZONTAL calls print_horizontal(), and anything else calls print_vertical(), the default “down then across” display.
