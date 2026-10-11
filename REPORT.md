@@ -38,3 +38,24 @@ Purpose: qsort() is generic. It can sort any array but doesn’t know the elemen
 Signature: int compare_names(const void *a, const void *b)
 How it works: qsort() passes pointers to two array elements. Each element is a char *, so each argument is really a char **. The function casts a and b to const char * const *, dereferences them to get the two strings, and returns strcmp(s1, s2). The result is negative if the first string comes first, zero if they are equal, and positive if the first comes after.
 Why const void *: qsort() must work with any data type, and void * is C’s generic pointer. const promises that the comparison will not modify the elements being compared. The function pointer type has to match exactly what qsort expects, so using any other argument types would not be valid.
+
+Feature 6, Q1. How ANSI escape codes work
+
+ANSI escape codes are special character sequences that the terminal interprets as commands instead of text to display. Each one begins with the escape character (ESC, octal \033) followed by [, then one or more numbers, then a letter. The letter m means “set text attributes (graphics mode)”.
+The number sets the colour or style: 30 to 37 are the colours (31 red, 32 green, 34 blue, 35 magenta) and 7 is reverse video. 0 resets everything.
+To print text in green you print the start code, the text, and then the reset code:
+c
+  printf("\033[0;32m%s\033[0m\n", "hello");
+
+\033[0;32m switches the terminal to green, and \033[0m returns it to the default colour. Without the reset, all later output would stay green.
+
+These codes take up bytes but no screen space, so alignment must be calculated using the visible length of the name, not the length of the coloured string.
+
+Feature 6, Q2. Checking whether a file is executable
+
+The execute permission is stored in three separate bits in st_mode:
+S_IXUSR (0100): executable by the owner
+S_IXGRP (0010): executable by the group
+S_IXOTH (0001): executable by others
+To test one, AND st_mode with the macro: if (st_mode & S_IXUSR) is true when the owner can execute the file. To check whether anyone can execute it, use st_mode & (S_IXUSR | S_IXGRP | S_IXOTH), which is what my get_color() does.
+Directories also have the execute bit set (it means “can enter the directory”). So I check for symlinks and directories first and apply the green colour only after the other types have been ruled out.

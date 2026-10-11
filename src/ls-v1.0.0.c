@@ -1,15 +1,17 @@
 /*
-* Programming Assignment 02: lsv1.5.0
+* Programming Assignment 02: lsv1.6.0
 * v1.1.0 added -l (long listing)
 * v1.2.0 added column display (down then across) as the default
 * v1.3.0 added -x (horizontal display)
 * v1.4.0 added alphabetical sorting
-* v1.5.0 adds colorized output based on file type
+* v1.5.0 added colorized output based on file type
+* v1.6.0 adds -R (recursive listing)
 * Usage:
-*       $ lsv1.5.0
-*       $ lsv1.5.0 -l
-*       $ lsv1.5.0 -x
-*       $ lsv1.5.0 -x /home /etc/
+*       $ lsv1.6.0
+*       $ lsv1.6.0 -l
+*       $ lsv1.6.0 -x
+*       $ lsv1.6.0 -R src
+*       $ lsv1.6.0 -lR /home /etc/
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,13 +29,13 @@
 
 extern int errno;
 
-/* Task 2: ANSI escape codes */
+/* ANSI escape codes */
 #define COLOR_RESET   "\033[0m"
-#define COLOR_BLUE    "\033[0;34m"   /* directory        */
-#define COLOR_GREEN   "\033[0;32m"   /* executable       */
+#define COLOR_BLUE    "\033[0;34m"   /* directory         */
+#define COLOR_GREEN   "\033[0;32m"   /* executable        */
 #define COLOR_RED     "\033[0;31m"   /* tarballs/archives */
-#define COLOR_PINK    "\033[0;35m"   /* symbolic link    */
-#define COLOR_REVERSE "\033[7m"      /* special files    */
+#define COLOR_PINK    "\033[0;35m"   /* symbolic link     */
+#define COLOR_REVERSE "\033[7m"      /* special files     */
 
 enum display_mode
 {
@@ -42,9 +44,9 @@ enum display_mode
     MODE_HORIZONTAL    /* -x */
 };
 
-static int use_color = 0;   /* set in main: only color when output is a terminal */
+static int use_color = 0;   /* only color when output is a terminal */
 
-void do_ls(const char *dir, enum display_mode mode);
+void do_ls(const char *dir, enum display_mode mode, int recursive);
 int  read_names(const char *dir, char ***out, size_t *count, size_t *max_len);
 int  compare_names(const void *a, const void *b);
 void do_ls_long(const char *dir, char **names, size_t count);
@@ -55,15 +57,17 @@ const char *get_color(mode_t mode, const char *name);
 int  ends_with(const char *name, const char *suffix);
 int  get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
+void build_path(char *buf, size_t size, const char *dir, const char *name);
 
 int main(int argc, char *argv[])
 {
     int opt;
     enum display_mode mode = MODE_DEFAULT;
+    int recursive_flag = 0;   /* Task 2 */
 
     use_color = isatty(STDOUT_FILENO);
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
@@ -73,22 +77,35 @@ int main(int argc, char *argv[])
         case 'x':
             mode = MODE_HORIZONTAL;
             break;
+        case 'R':
+            recursive_flag = 1;
+            break;
         default:
-            fprintf(stderr, "Usage: %s [-l | -x] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [-R] [directory...]\n", argv[0]);
             exit(EXIT_FAILURE);
         }
     }
 
     if (optind == argc)
     {
-        do_ls(".", mode);
+        do_ls(".", mode, recursive_flag);
+    }
+    else if (recursive_flag)
+    {
+        /* with -R, do_ls() prints its own "dir:" header for every directory */
+        for (int i = optind; i < argc; i++)
+        {
+            if (i > optind)
+                puts("");
+            do_ls(argv[i], mode, recursive_flag);
+        }
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], mode);
+            do_ls(argv[i], mode, recursive_flag);
             puts("");
         }
     }
@@ -119,7 +136,17 @@ int ends_with(const char *name, const char *suffix)
     return (n >= s) && (strcmp(name + n - s, suffix) == 0);
 }
 
-/* Task 4: choose the color from st_mode (from lstat) and the file name */
+/* Build "dir/name" (avoids a double slash if dir already ends with '/') */
+void build_path(char *buf, size_t size, const char *dir, const char *name)
+{
+    size_t len = strlen(dir);
+    if (len > 0 && dir[len - 1] == '/')
+        snprintf(buf, size, "%s%s", dir, name);
+    else
+        snprintf(buf, size, "%s/%s", dir, name);
+}
+
+/* Choose the color from st_mode (from lstat) and the file name */
 const char *get_color(mode_t mode, const char *name)
 {
     if (S_ISLNK(mode))
@@ -133,12 +160,10 @@ const char *get_color(mode_t mode, const char *name)
         return COLOR_RED;
     if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
         return COLOR_GREEN;
-    return NULL;   /* normal file: no color */
+    return NULL;
 }
 
-/* Task 3 + 4: lstat the file, print its name in color, then pad with
- * spaces up to pad_to visible characters. The padding is added by hand
- * because the invisible color codes would break printf("%-*s"). */
+/* Print the name in color, then pad with spaces up to pad_to visible chars */
 void print_name(const char *dir, const char *name, size_t pad_to)
 {
     char path[PATH_MAX];
@@ -147,7 +172,7 @@ void print_name(const char *dir, const char *name, size_t pad_to)
 
     if (use_color)
     {
-        snprintf(path, sizeof(path), "%s/%s", dir, name);
+        build_path(path, sizeof(path), dir, name);
         if (lstat(path, &st) == 0)
             color = get_color(st.st_mode, name);
     }
@@ -215,11 +240,15 @@ int read_names(const char *dir, char ***out, size_t *count_out, size_t *max_len_
     return 0;
 }
 
-/* Read -> sort -> display -> free */
-void do_ls(const char *dir, enum display_mode mode)
+/* Task 3: header -> read -> sort -> display -> recurse -> free */
+void do_ls(const char *dir, enum display_mode mode, int recursive)
 {
     char **names = NULL;
     size_t count = 0, max_len = 0;
+
+    /* standard "ls -R" behavior: print the directory name first */
+    if (recursive)
+        printf("%s:\n", dir);
 
     if (read_names(dir, &names, &count, &max_len) == -1)
         return;
@@ -235,6 +264,32 @@ void do_ls(const char *dir, enum display_mode mode)
             print_horizontal(dir, names, count, max_len);
         else
             print_vertical(dir, names, count, max_len);
+    }
+
+    /* Recursion: visit every sub-directory of this directory */
+    if (recursive)
+    {
+        for (size_t i = 0; i < count; i++)
+        {
+            /* skip "." and ".." (the base case guard) */
+            if (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+                continue;
+
+            char path[PATH_MAX];
+            struct stat st;
+
+            build_path(path, sizeof(path), dir, names[i]);   /* full path */
+
+            /* lstat: a symlink to a directory is NOT followed */
+            if (lstat(path, &st) == -1)
+                continue;
+
+            if (S_ISDIR(st.st_mode))
+            {
+                puts("");                       /* blank line between directories */
+                do_ls(path, mode, recursive);   /* recursive call with full path */
+            }
+        }
     }
 
     for (size_t i = 0; i < count; i++)
@@ -331,7 +386,7 @@ void do_ls_long(const char *dir, char **names, size_t count)
 
     for (size_t i = 0; i < count; i++)
     {
-        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        build_path(path, sizeof(path), dir, names[i]);
         if (lstat(path, &st) == -1)
             continue;
 
@@ -361,7 +416,7 @@ void do_ls_long(const char *dir, char **names, size_t count)
 
     for (size_t i = 0; i < count; i++)
     {
-        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        build_path(path, sizeof(path), dir, names[i]);
         if (lstat(path, &st) == -1)
         {
             perror(path);
@@ -391,7 +446,6 @@ void do_ls_long(const char *dir, char **names, size_t count)
                w_size, (long long)st.st_size,
                timestr);
 
-        /* the file name is printed in color */
         print_name(dir, names[i], 0);
 
         if (S_ISLNK(st.st_mode))
