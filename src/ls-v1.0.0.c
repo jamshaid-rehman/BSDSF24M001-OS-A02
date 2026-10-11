@@ -1,14 +1,15 @@
 /*
-* Programming Assignment 02: lsv1.4.0
+* Programming Assignment 02: lsv1.5.0
 * v1.1.0 added -l (long listing)
 * v1.2.0 added column display (down then across) as the default
 * v1.3.0 added -x (horizontal display)
-* v1.4.0 adds alphabetical sorting for all display modes
+* v1.4.0 added alphabetical sorting
+* v1.5.0 adds colorized output based on file type
 * Usage:
-*       $ lsv1.4.0
-*       $ lsv1.4.0 -l
-*       $ lsv1.4.0 -x
-*       $ lsv1.4.0 -x /home /etc/
+*       $ lsv1.5.0
+*       $ lsv1.5.0 -l
+*       $ lsv1.5.0 -x
+*       $ lsv1.5.0 -x /home /etc/
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,14 @@
 
 extern int errno;
 
+/* Task 2: ANSI escape codes */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"   /* directory        */
+#define COLOR_GREEN   "\033[0;32m"   /* executable       */
+#define COLOR_RED     "\033[0;31m"   /* tarballs/archives */
+#define COLOR_PINK    "\033[0;35m"   /* symbolic link    */
+#define COLOR_REVERSE "\033[7m"      /* special files    */
+
 enum display_mode
 {
     MODE_DEFAULT,      /* down then across */
@@ -33,12 +42,17 @@ enum display_mode
     MODE_HORIZONTAL    /* -x */
 };
 
+static int use_color = 0;   /* set in main: only color when output is a terminal */
+
 void do_ls(const char *dir, enum display_mode mode);
 int  read_names(const char *dir, char ***out, size_t *count, size_t *max_len);
 int  compare_names(const void *a, const void *b);
 void do_ls_long(const char *dir, char **names, size_t count);
-void print_vertical(char **names, size_t count, size_t max_len);
-void print_horizontal(char **names, size_t count, size_t max_len);
+void print_vertical(const char *dir, char **names, size_t count, size_t max_len);
+void print_horizontal(const char *dir, char **names, size_t count, size_t max_len);
+void print_name(const char *dir, const char *name, size_t pad_to);
+const char *get_color(mode_t mode, const char *name);
+int  ends_with(const char *name, const char *suffix);
 int  get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
 
@@ -46,6 +60,8 @@ int main(int argc, char *argv[])
 {
     int opt;
     enum display_mode mode = MODE_DEFAULT;
+
+    use_color = isatty(STDOUT_FILENO);
 
     while ((opt = getopt(argc, argv, "lx")) != -1)
     {
@@ -88,9 +104,7 @@ int get_terminal_width(void)
     return 80;
 }
 
-/* Task 2: comparison function for qsort().
- * qsort passes pointers to the array ELEMENTS. Each element is a char *,
- * so each argument is really a char ** (a pointer to a string pointer). */
+/* Comparison function for qsort(): each argument is a char ** */
 int compare_names(const void *a, const void *b)
 {
     const char *s1 = *(const char * const *)a;
@@ -98,8 +112,56 @@ int compare_names(const void *a, const void *b)
     return strcmp(s1, s2);
 }
 
-/* Read all names (skipping hidden files) into a dynamic array.
- * Returns 0 on success, -1 if the directory cannot be opened. */
+/* Returns 1 if name ends with suffix */
+int ends_with(const char *name, const char *suffix)
+{
+    size_t n = strlen(name), s = strlen(suffix);
+    return (n >= s) && (strcmp(name + n - s, suffix) == 0);
+}
+
+/* Task 4: choose the color from st_mode (from lstat) and the file name */
+const char *get_color(mode_t mode, const char *name)
+{
+    if (S_ISLNK(mode))
+        return COLOR_PINK;
+    if (S_ISDIR(mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISFIFO(mode) || S_ISSOCK(mode))
+        return COLOR_REVERSE;
+    if (ends_with(name, ".tar") || ends_with(name, ".gz") ||
+        ends_with(name, ".zip") || ends_with(name, ".tgz"))
+        return COLOR_RED;
+    if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        return COLOR_GREEN;
+    return NULL;   /* normal file: no color */
+}
+
+/* Task 3 + 4: lstat the file, print its name in color, then pad with
+ * spaces up to pad_to visible characters. The padding is added by hand
+ * because the invisible color codes would break printf("%-*s"). */
+void print_name(const char *dir, const char *name, size_t pad_to)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    const char *color = NULL;
+
+    if (use_color)
+    {
+        snprintf(path, sizeof(path), "%s/%s", dir, name);
+        if (lstat(path, &st) == 0)
+            color = get_color(st.st_mode, name);
+    }
+
+    if (color)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+
+    for (size_t i = strlen(name); i < pad_to; i++)
+        putchar(' ');
+}
+
+/* Read all names (skipping hidden files) into a dynamic array. */
 int read_names(const char *dir, char ***out, size_t *count_out, size_t *max_len_out)
 {
     struct dirent *entry;
@@ -116,8 +178,6 @@ int read_names(const char *dir, char ***out, size_t *count_out, size_t *max_len_
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
-        /* Hidden files are skipped. If you later include them (-a),
-         * the sorting below still works without any change. */
         if (entry->d_name[0] == '.')
             continue;
 
@@ -164,19 +224,17 @@ void do_ls(const char *dir, enum display_mode mode)
     if (read_names(dir, &names, &count, &max_len) == -1)
         return;
 
-    /* Task 2: sort immediately after reading, before any display */
     if (count > 1)
         qsort(names, count, sizeof(char *), compare_names);
 
-    /* Task 3: every mode receives the already-sorted array */
     if (count > 0)
     {
         if (mode == MODE_LONG)
             do_ls_long(dir, names, count);
         else if (mode == MODE_HORIZONTAL)
-            print_horizontal(names, count, max_len);
+            print_horizontal(dir, names, count, max_len);
         else
-            print_vertical(names, count, max_len);
+            print_vertical(dir, names, count, max_len);
     }
 
     for (size_t i = 0; i < count; i++)
@@ -185,7 +243,7 @@ void do_ls(const char *dir, enum display_mode mode)
 }
 
 /* Default: "down then across" */
-void print_vertical(char **names, size_t count, size_t max_len)
+void print_vertical(const char *dir, char **names, size_t count, size_t max_len)
 {
     int term_width = get_terminal_width();
     size_t spacing = 2;
@@ -204,16 +262,16 @@ void print_vertical(char **names, size_t count, size_t max_len)
                 break;
 
             if (idx + num_rows < count && col < num_cols - 1)
-                printf("%-*s", (int)col_width, names[idx]);
+                print_name(dir, names[idx], col_width);
             else
-                printf("%s", names[idx]);
+                print_name(dir, names[idx], 0);
         }
         printf("\n");
     }
 }
 
 /* -x: horizontal (row-major) display */
-void print_horizontal(char **names, size_t count, size_t max_len)
+void print_horizontal(const char *dir, char **names, size_t count, size_t max_len)
 {
     int term_width = get_terminal_width();
     size_t spacing = 2;
@@ -227,7 +285,7 @@ void print_horizontal(char **names, size_t count, size_t max_len)
             printf("\n");
             pos = 0;
         }
-        printf("%-*s", (int)col_width, names[i]);
+        print_name(dir, names[i], col_width);
         pos += col_width;
     }
     printf("\n");
@@ -262,13 +320,12 @@ void mode_to_string(mode_t mode, char *str)
     str[10] = '\0';
 }
 
-/* Long listing (-l): now works from the sorted array of names */
+/* Long listing (-l), works from the sorted array of names */
 void do_ls_long(const char *dir, char **names, size_t count)
 {
     struct stat st;
     char path[PATH_MAX];
 
-    /* Pass 1: column widths and total blocks */
     int w_link = 1, w_user = 1, w_group = 1, w_size = 1;
     long long total = 0;
 
@@ -302,7 +359,6 @@ void do_ls_long(const char *dir, char **names, size_t count)
 
     printf("total %lld\n", total / 2);
 
-    /* Pass 2: print each entry in sorted order */
     for (size_t i = 0; i < count; i++)
     {
         snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
@@ -327,14 +383,16 @@ void do_ls_long(const char *dir, char **names, size_t count)
         char timestr[32];
         snprintf(timestr, sizeof(timestr), "%.12s", ctime(&t) + 4);
 
-        printf("%s %*lu %-*s %-*s %*lld %s %s",
+        printf("%s %*lu %-*s %-*s %*lld %s ",
                mode,
                w_link, (unsigned long)st.st_nlink,
                w_user, user,
                w_group, group,
                w_size, (long long)st.st_size,
-               timestr,
-               names[i]);
+               timestr);
+
+        /* the file name is printed in color */
+        print_name(dir, names[i], 0);
 
         if (S_ISLNK(st.st_mode))
         {

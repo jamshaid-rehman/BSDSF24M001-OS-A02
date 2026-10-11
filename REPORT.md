@@ -31,3 +31,10 @@ Feature 4, Q2. Managing display modes
 I used an enum display_mode with three values: MODE_DEFAULT, MODE_LONG and MODE_HORIZONTAL. It starts as MODE_DEFAULT.
 In main, the getopt() loop sets the mode: -l sets MODE_LONG and -x sets MODE_HORIZONTAL. If both are given, the last one wins, as in the real ls.
 The mode is passed to do_ls(). If the mode is MODE_LONG, it calls do_ls_long(). Otherwise it reads all filenames into a dynamic array, then checks the mode: MODE_HORIZONTAL calls print_horizontal(), and anything else calls print_vertical(), the default “down then across” display.
+ 
+Feature 5, Q2. The qsort() comparison function
+
+Purpose: qsort() is generic. It can sort any array but doesn’t know the element type, so it calls my function to decide which of two elements comes first.
+Signature: int compare_names(const void *a, const void *b)
+How it works: qsort() passes pointers to two array elements. Each element is a char *, so each argument is really a char **. The function casts a and b to const char * const *, dereferences them to get the two strings, and returns strcmp(s1, s2). The result is negative if the first string comes first, zero if they are equal, and positive if the first comes after.
+Why const void *: qsort() must work with any data type, and void * is C’s generic pointer. const promises that the comparison will not modify the elements being compared. The function pointer type has to match exactly what qsort expects, so using any other argument types would not be valid.
