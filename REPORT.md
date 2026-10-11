@@ -59,3 +59,15 @@ S_IXGRP (0010): executable by the group
 S_IXOTH (0001): executable by others
 To test one, AND st_mode with the macro: if (st_mode & S_IXUSR) is true when the owner can execute the file. To check whether anyone can execute it, use st_mode & (S_IXUSR | S_IXGRP | S_IXOTH), which is what my get_color() does.
 Directories also have the execute bit set (it means “can enter the directory”). So I check for symlinks and directories first and apply the green colour only after the other types have been ruled out.
+
+
+Feature 7, Q1. The base case
+
+A base case is the condition in a recursive function that stops it from calling itself again. Without it, the function would keep calling itself forever and the stack would overflow.
+In my recursive ls, the recursion stops in two situations. First, a directory with no sub-directories: the loop over its entries finds nothing that passes S_ISDIR(), so it makes no further recursive call and returns to the caller. Second, the . and .. entries are explicitly skipped, because following them would lead back to the same directory or to its parent and never end. Symlinks are checked with lstat() and not followed, which also prevents loops caused by links pointing back up the tree.
+
+Feature 7, Q2. Why construct the full path
+
+readdir() returns only the entry’s name (such as subdir), not where it is located. The program’s current working directory does not change as it recurses, so a bare name is resolved relative to where the program was started, not relative to the directory being listed.
+If do_ls("parent_dir") called do_ls("subdir"), it would look for subdir in the current working directory, not inside parent_dir. It would either fail with “Cannot open directory”, or, worse, list a different, unrelated folder that happens to have the same name. lstat() would have the same problem when checking whether the entry is a directory.
+Building the full path parent_dir/subdir gives a path that is correct no matter where the program was started, and every level of recursion adds its own part to the path (a, a/b, a/b/c), so the program always opens the right directory.
